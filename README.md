@@ -4,7 +4,7 @@ Generates a random code → renders it to a PNG image → produces a **signed, o
 
 **Zero dependencies.** Uses only Node.js built-ins (`crypto`, `zlib`).
 
-![example](example.png)
+![example](easy.png)
 
 ## Install
 

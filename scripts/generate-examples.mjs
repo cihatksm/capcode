@@ -17,6 +17,7 @@ for (const { name, opts } of examples) {
   const { code, image } = createCaptcha(opts);
   if (image) {
     writeFileSync(new URL(`../examples/${name}.png`, import.meta.url), image.buffer);
+    if (name == 'easy') writeFileSync(new URL(`../${name}.png`, import.meta.url), image.buffer);
     console.log(`examples/${name}.png  (code=${code}, ${image.width}x${image.height})`);
   } else {
     console.log(`examples/${name}: image NOT rendered (renderImage=false) — code=${code}`);

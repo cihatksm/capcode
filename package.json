@@ -1,7 +1,7 @@
 {
   "name": "code-captcha",
-  "version": "0.1.0",
-  "description": "Random code -> PNG image (buffer/base64/blob) + irreversible hash based verification. Zero dependencies, configurable font, per-image randomized geometry to defeat OCR.",
+  "version": "0.0.1",
+  "description": "Random code -> PNG image (buffer/base64/blob) + secret-bound signed token verification. Zero dependencies, configurable font, per-image randomized geometry to defeat OCR.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
@@ -19,12 +19,24 @@
     "code",
     "image",
     "png",
-    "hash",
+    "hmac",
     "verification",
+    "security",
     "otp"
   ],
-  "author": "",
+  "author": "cihatksm",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cihatksm/code-captcha.git"
+  },
+  "homepage": "https://github.com/cihatksm/code-captcha#readme",
+  "bugs": {
+    "url": "https://github.com/cihatksm/code-captcha/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=18"
   },
