@@ -1,5 +1,5 @@
 {
-  "name": "code-captcha",
+  "name": "capcode",
   "version": "0.0.1",
   "description": "Random code -> PNG image (buffer/base64/blob) + secret-bound signed token verification. Zero dependencies, configurable font, per-image randomized geometry to defeat OCR.",
   "main": "dist/index.js",
@@ -28,11 +28,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cihatksm/code-captcha.git"
+    "url": "git+https://github.com/cihatksm/capcode.git"
   },
-  "homepage": "https://github.com/cihatksm/code-captcha#readme",
+  "homepage": "https://github.com/cihatksm/capcode#readme",
   "bugs": {
-    "url": "https://github.com/cihatksm/code-captcha/issues"
+    "url": "https://github.com/cihatksm/capcode/issues"
   },
   "publishConfig": {
     "access": "public"

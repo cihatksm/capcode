@@ -1,4 +1,4 @@
-# code-captcha
+# capcode
 
 Generates a random code → renders it to a PNG image → produces a **signed, opaque token** of the code (image id) → verifies user input by checking the token against the supplied code. The token cannot be reversed to the code without the `secret`.
 
@@ -9,13 +9,13 @@ Generates a random code → renders it to a PNG image → produces a **signed, o
 ## Install
 
 ```bash
-npm install code-captcha
+npm install capcode
 ```
 
 ## Usage
 
 ```js
-import { createCaptcha, verifyCode } from "code-captcha";
+import { createCaptcha, verifyCode } from "capcode";
 
 // 1) Create a captcha
 const captcha = createCaptcha({ secret: process.env.CAPTCHA_SECRET });
@@ -105,7 +105,7 @@ createCaptcha({
 Provide a `glyphs` map where each value is an array of 7 numbers, each a 5-bit row (MSB = leftmost pixel):
 
 ```js
-import { createCaptcha, DEFAULT_GLYPHS } from "code-captcha";
+import { createCaptcha, DEFAULT_GLYPHS } from "capcode";
 
 const glyphs = { ...DEFAULT_GLYPHS, "#": [0x04, 0x04, 0x0a, 0x04, 0x11, 0x11, 0x11] };
 createCaptcha({ charset: "A#2", glyphs, secret: "s" });
