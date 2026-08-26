@@ -1,0 +1,35 @@
+{
+  "name": "code-captcha",
+  "version": "0.1.0",
+  "description": "Random code -> PNG image (buffer/base64/blob) + irreversible hash based verification. Zero dependencies, configurable font, per-image randomized geometry to defeat OCR.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test",
+    "prepublishOnly": "npm run test"
+  },
+  "keywords": [
+    "captcha",
+    "code",
+    "image",
+    "png",
+    "hash",
+    "verification",
+    "otp"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.6.0"
+  }
+}
