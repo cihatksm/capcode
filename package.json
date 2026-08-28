@@ -1,6 +1,6 @@
 {
   "name": "capcode",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Random code -> PNG/SVG/JPEG image + secret-bound signed token with TTL. Zero dependencies, pure TypeScript, configurable font, per-image randomized geometry to defeat OCR.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
