@@ -207,6 +207,21 @@ npm run benchmark
 
 Measures captcha rendering (easy / medium / hard, PNG and SVG) and token operations (hashCode / verifyCode).
 
+## Security
+
+> **Audited: `0.0.2` — 2026-08-29.** Zero dependencies, no native build, HMAC-SHA256 opaque tokens with TTL and `timingSafeEqual`. Full report: [`SECURITY.md`](./SECURITY.md).
+
+**Quick hardening:**
+```js
+// Always enforce TTL at verify time
+verifyCode(id, userInput, { secret: SECRET, maxAge: 300, algorithm: "sha256" });
+// Keep SECRET ≥32 bytes server-side only, pin "capcode": "0.0.2" exactly
+```
+
+One low-severity note: future timestamps (`ts > now + 60s`) should be rejected — see `SECURITY.md#3.2` for wrapper fix until upstream patch. No backdoor, `npm audit` 0 vulns.
+
+Report issues at `https://github.com/cihatksm/capcode/issues`.
+
 ## License
 
 MIT
