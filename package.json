@@ -1,7 +1,7 @@
 {
   "name": "capcode",
-  "version": "0.0.1",
-  "description": "Random code -> PNG image (buffer/base64/blob) + secret-bound signed token verification. Zero dependencies, configurable font, per-image randomized geometry to defeat OCR.",
+  "version": "0.0.2",
+  "description": "Random code -> PNG/SVG/JPEG image + secret-bound signed token with TTL. Zero dependencies, pure TypeScript, configurable font, per-image randomized geometry to defeat OCR.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
@@ -11,18 +11,24 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "npm run build && node --test",
-    "prepublishOnly": "npm run test"
+    "test": "npm run build && node --test test/captcha.test.mjs",
+    "prepublishOnly": "npm run test",
+    "example": "node generate.mjs",
+    "benchmark": "npm run build && node benchmark.mjs"
   },
   "keywords": [
     "captcha",
     "code",
     "image",
     "png",
+    "svg",
     "hmac",
+    "token",
+    "ttl",
     "verification",
     "security",
-    "otp"
+    "otp",
+    "anti-ocr"
   ],
   "author": "cihatksm",
   "license": "MIT",

@@ -1,6 +1,35 @@
 import { randomInt, createHmac, timingSafeEqual, randomBytes } from "node:crypto";
 import { encodePng } from "./png.js";
-import { DEFAULT_GLYPHS, GLYPH_WIDTH, GLYPH_HEIGHT, getGlyph, validateGlyphs, } from "./font.js";
+import { encodeSvg } from "./svg.js";
+import { encodeJpeg } from "./jpeg.js";
+import { DEFAULT_GLYPHS, GLYPH_WIDTH, GLYPH_HEIGHT, VECTOR_GLYPH_WIDTH, VECTOR_GLYPH_HEIGHT, getGlyph, getVectorGlyph, validateGlyphs, validateVectorGlyphs, } from "./font.js";
+// Rendering and Math Constants to eliminate Magic Numbers
+const RENDERING_CONSTANTS = {
+    SUBPIXEL_OFFSETS: [-0.25, 0.25],
+    SUBPIXEL_DIVISOR: 4,
+    MAX_RGB_VALUE: 255,
+    COLOR_LIGHTNESS_THRESHOLD: 128,
+    RADIAN_CONVERSION: Math.PI / 180,
+    GRADIENT_DEFAULT_ANGLE: 45,
+    GRADIENT_MIDPOINT: 0.5,
+    DEFAULT_OPAQUE: 1.0,
+    PADDING_SCALE_MULTIPLIER: 3,
+};
+const WAVE_CONSTANTS = {
+    PHASE_DIVISOR: 100,
+    DEFAULT_WAVES_MIN: 2,
+    DEFAULT_WAVES_MAX: 5,
+};
+const COLOR_REF_FACTORS = {
+    LIGHT_BG_LINE_LIGHTNESS: 205,
+    LIGHT_BG_LINE_CONTRAST: 215,
+    LIGHT_BG_LINE_MIX: 0.6,
+    DARK_BG_LINE_LIGHTNESS: 110,
+    DARK_BG_LINE_CONTRAST: 130,
+    DARK_BG_LINE_MIX: 0.4,
+    DARK_SPECK_MIX: 0.85,
+    LIGHT_SPECK_MIX: 0.85,
+};
 export const DEFAULT_CHARSET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const DIFFICULTY_PRESETS = {
     easy: {
@@ -14,6 +43,7 @@ const DIFFICULTY_PRESETS = {
         shear: 0,
         widthScale: [1, 1],
         heightScale: [1, 1],
+        opacity: [0.85, 1],
     },
     medium: {
         dots: 2.5,
@@ -26,6 +56,7 @@ const DIFFICULTY_PRESETS = {
         shear: 0.12,
         widthScale: [0.9, 1.1],
         heightScale: [0.95, 1.05],
+        opacity: [0.65, 1],
     },
     hard: {
         dots: 6,
@@ -38,11 +69,10 @@ const DIFFICULTY_PRESETS = {
         shear: 0.3,
         widthScale: [0.85, 1.2],
         heightScale: [0.85, 1.2],
+        opacity: [0.5, 1],
     },
 };
-function resolveHash(options = {}) {
-    return { secret: options.secret, algorithm: options.algorithm ?? "sha256" };
-}
+// ── helpers ──
 function mix(a, b, t) {
     return [
         Math.round(a[0] + (b[0] - a[0]) * t),
@@ -53,32 +83,19 @@ function mix(a, b, t) {
 function isLight(c) {
     return (c[0] + c[1] + c[2]) / 3 > 128;
 }
-function resolve(options = {}) {
-    const length = options.length ?? 6;
-    const charset = options.charset ?? DEFAULT_CHARSET;
-    const scale = options.scale ?? 8;
-    const difficulty = options.difficulty ?? "medium";
-    const glyphs = options.glyphs ?? DEFAULT_GLYPHS;
-    if (!Number.isInteger(length) || length < 1 || length > 64) {
-        throw new RangeError("length must be an integer between 1 and 64");
+function normalizeCode(code) {
+    return code.replace(/\s+/g, "").toUpperCase();
+}
+function randRange(min, max) {
+    return min + Math.random() * (max - min);
+}
+function assertIntRange(name, value, min, max) {
+    if (!Number.isInteger(value) || value < min || value > max) {
+        throw new RangeError(`${name} must be an integer between ${min} and ${max}`);
     }
-    if (!Number.isInteger(scale) || scale < 1 || scale > 16) {
-        throw new RangeError("scale must be an integer between 1 and 16");
-    }
-    if (charset.length < 2) {
-        throw new Error("charset must contain at least 2 characters");
-    }
-    if (!options.charset && length > charset.length) {
-        throw new Error("charset too small for the requested code length");
-    }
-    if (!(difficulty in DIFFICULTY_PRESETS)) {
-        throw new Error(`difficulty must be one of: ${Object.keys(DIFFICULTY_PRESETS).join(", ")}`);
-    }
-    validateGlyphs(glyphs, charset);
-    const noise = {
-        ...DIFFICULTY_PRESETS[difficulty],
-        ...options.noise,
-    };
+}
+function resolveNoise(difficulty, overrides) {
+    const noise = { ...DIFFICULTY_PRESETS[difficulty], ...overrides };
     if (noise.dots < 0 ||
         noise.backgroundLines < 0 ||
         noise.foregroundLines < 0 ||
@@ -90,112 +107,183 @@ function resolve(options = {}) {
     if (noise.jitter < 0 || noise.jitter > 3) {
         throw new RangeError("noise.jitter must be between 0 and 3");
     }
-    const g = options.theme?.backgroundGradient;
-    const gradient = g != null
-        ? { from: g.from, to: g.to, angle: g.angle ?? 45 }
-        : undefined;
-    const theme = {
-        textColor: options.theme?.textColor ?? undefined,
-        backgroundColor: options.theme?.backgroundColor ?? [255, 255, 255],
-        lineColor: options.theme?.lineColor ?? undefined,
+    if (noise.opacity[0] < 0 ||
+        noise.opacity[0] > 1 ||
+        noise.opacity[1] < 0 ||
+        noise.opacity[1] > 1 ||
+        noise.opacity[0] > noise.opacity[1]) {
+        throw new RangeError("noise.opacity must be [min, max] within 0-1 and min <= max");
+    }
+    return noise;
+}
+function resolveTheme(theme) {
+    const g = theme?.backgroundGradient;
+    const gradient = g ? { from: g.from, to: g.to, angle: g.angle ?? RENDERING_CONSTANTS.GRADIENT_DEFAULT_ANGLE } : undefined;
+    const defaultWhite = [RENDERING_CONSTANTS.MAX_RGB_VALUE, RENDERING_CONSTANTS.MAX_RGB_VALUE, RENDERING_CONSTANTS.MAX_RGB_VALUE];
+    const backgroundColor = theme?.backgroundColor ?? defaultWhite;
+    const bgRef = gradient ? mix(gradient.from, gradient.to, RENDERING_CONSTANTS.GRADIENT_MIDPOINT) : backgroundColor;
+    const resolved = {
+        textColor: theme?.textColor,
+        backgroundColor,
+        lineColor: theme?.lineColor,
         gradient,
-        bgRef: gradient
-            ? [
-                Math.round((gradient.from[0] + gradient.to[0]) / 2),
-                Math.round((gradient.from[1] + gradient.to[1]) / 2),
-                Math.round((gradient.from[2] + gradient.to[2]) / 2),
-            ]
-            : (options.theme?.backgroundColor ?? [255, 255, 255]),
+        bgRef,
     };
-    const colorChecks = [
-        theme.backgroundColor,
-        theme.textColor,
-        theme.lineColor,
+    const toCheck = [
+        resolved.backgroundColor,
+        resolved.textColor,
+        resolved.lineColor,
         gradient?.from,
         gradient?.to,
     ];
-    if (colorChecks.some((c) => c && c.some((v) => v < 0 || v > 255))) {
-        throw new RangeError("theme colors must be in the 0-255 range");
+    if (toCheck.some((c) => c && c.some((v) => v < 0 || v > RENDERING_CONSTANTS.MAX_RGB_VALUE))) {
+        throw new RangeError(`theme colors must be in the 0-${RENDERING_CONSTANTS.MAX_RGB_VALUE} range`);
     }
-    return { length, charset, scale, noise, glyphs, theme, renderImage: options.renderImage ?? true, ...resolveHash(options) };
+    return resolved;
 }
+function resolve(options = {}) {
+    const length = options.length ?? 6;
+    const charset = options.charset ?? DEFAULT_CHARSET;
+    const scale = options.scale ?? 8;
+    const difficulty = options.difficulty ?? "medium";
+    const algorithm = options.algorithm ?? "sha256";
+    assertIntRange("length", length, 1, 64);
+    assertIntRange("scale", scale, 1, 16);
+    if (charset.length < 2)
+        throw new Error("charset must contain at least 2 characters");
+    if (!(difficulty in DIFFICULTY_PRESETS)) {
+        throw new Error(`difficulty must be one of: ${Object.keys(DIFFICULTY_PRESETS).join(", ")}`);
+    }
+    // Bitmap font is default for clean, balanced aesthetics; vector font only if explicitly provided.
+    const useVector = !!options.vectorGlyphs;
+    let glyphs = null;
+    let vectorGlyphs = null;
+    if (options.vectorGlyphs) {
+        vectorGlyphs = options.vectorGlyphs;
+        validateVectorGlyphs(vectorGlyphs, charset);
+    }
+    else if (options.glyphs) {
+        glyphs = options.glyphs;
+        validateGlyphs(glyphs, charset);
+    }
+    else {
+        glyphs = DEFAULT_GLYPHS;
+        validateGlyphs(glyphs, charset);
+    }
+    const format = options.format ?? "png";
+    return {
+        length,
+        charset,
+        scale,
+        glyphs,
+        vectorGlyphs,
+        useVector,
+        algorithm,
+        secret: options.secret,
+        noise: resolveNoise(difficulty, options.noise),
+        theme: resolveTheme(options.theme),
+        renderImage: options.renderImage ?? true,
+        format,
+    };
+}
+// ── public API ──
 /** Generates a cryptographically random code from the charset. */
 export function generateCode(options = {}) {
     const { length, charset } = resolve(options);
     let out = "";
-    for (let i = 0; i < length; i++) {
+    for (let i = 0; i < length; i++)
         out += charset[randomInt(charset.length)];
-    }
     return out;
 }
 /**
- * Produces a verifiable id for a code as a signed, opaque token:
+ * Produces a verifiable id for a code as a signed, opaque token.
  *
- *     id = `${nonce}.${hmac(secret, nonce + ":" + normalizedCode)}`
- *
- * The token is opaque to clients: it leaks neither the code nor its length
- * (the `nonce` makes every token unique even for identical codes).
- *
- * A `secret` is REQUIRED. Without it the code space is tiny (≈32^length) and
- * could be brute-forced, so producing a verifiable id is refused. Verification
- * (`verifyCode`) also requires the same `secret`.
- *
- * Input is normalized (uppercased, whitespace removed) so user input
- * like " a b 3x " matches the code "AB3X".
+ * Token format (v2): `nonce.ts.tag`
+ *   - `nonce`  16-byte random hex, prevents precomputation
+ *   - `ts`     Unix timestamp (seconds) encoded as base-36, compact and URL-safe
+ *   - `tag`    HMAC(secret, `nonce:ts:normalizedCode`)
  */
 export function hashCode(code, options = {}) {
-    const { secret, algorithm } = resolveHash(options);
-    if (!secret) {
+    const secret = options.secret;
+    const algorithm = options.algorithm ?? "sha256";
+    if (!secret)
         throw new Error("a `secret` is required to produce a verifiable captcha id");
-    }
-    const normalized = code.replace(/\s+/g, "").toUpperCase();
+    const normalized = normalizeCode(code);
     const nonce = randomBytes(16).toString("hex");
-    const tag = createHmac(algorithm, secret).update(`${nonce}:${normalized}`).digest("hex");
-    return `${nonce}.${tag}`;
+    // Embed a compact unix timestamp (base-36) so tokens can carry expiry information
+    const ts = Math.floor(Date.now() / 1000).toString(36);
+    const tag = createHmac(algorithm, secret).update(`${nonce}:${ts}:${normalized}`).digest("hex");
+    return `${nonce}.${ts}.${tag}`;
 }
 /**
- * Verifies a user-supplied `code` against a previously issued `id` (from
- * `hashCode` / `createCaptcha`). Uses constant-time comparison.
+ * Verifies a user-supplied `code` against a previously issued `id`.
+ * Uses constant-time comparison. Requires the same `secret`.
  *
- * Requires the same `secret` used when the id was created. Without a `secret`
- * verification is refused (throws), because an unsigned token cannot be
- * authenticated.
+ * Supports both token formats:
+ *   - v2 `nonce.ts.tag`  — issued by capcode with TTL support
+ *   - v1 `nonce.tag`     — legacy format; accepted only when `maxAge` is NOT set
  */
 export function verifyCode(id, code, options = {}) {
-    const { secret, algorithm } = resolveHash(options);
-    if (!secret) {
+    const secret = options.secret;
+    const algorithm = options.algorithm ?? "sha256";
+    const maxAge = options.maxAge;
+    if (!secret)
         throw new Error("a `secret` is required to verify a captcha id");
-    }
     const raw = String(id);
-    const dot = raw.indexOf(".");
-    if (dot < 0)
+    const parts = raw.split(".");
+    let nonce;
+    let ts;
+    let tag;
+    if (parts.length === 3) {
+        // v2 format: nonce.ts.tag
+        [nonce, ts, tag] = parts;
+        tag = tag.toLowerCase();
+    }
+    else if (parts.length === 2) {
+        // v1 legacy format: nonce.tag (no timestamp)
+        [nonce, tag] = parts;
+        ts = null;
+        tag = tag.toLowerCase();
+        // Legacy tokens carry no timestamp — cannot satisfy a maxAge requirement
+        if (maxAge !== undefined)
+            return false;
+    }
+    else {
         return false;
-    const nonce = raw.slice(0, dot);
-    const tag = raw.slice(dot + 1).toLowerCase();
+    }
     if (!/^[0-9a-f]+$/.test(nonce) || !/^[0-9a-f]+$/.test(tag))
         return false;
-    const normalized = code.replace(/\s+/g, "").toUpperCase();
-    const expected = Buffer.from(createHmac(algorithm, secret).update(`${nonce}:${normalized}`).digest("hex"), "hex");
+    if (ts !== null && !/^[0-9a-z]+$/.test(ts))
+        return false;
+    // TTL check: reject tokens older than maxAge seconds
+    if (maxAge !== undefined && ts !== null) {
+        const issuedAtSeconds = parseInt(ts, 36);
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        if (nowSeconds - issuedAtSeconds > maxAge)
+            return false;
+    }
+    const normalized = normalizeCode(code);
+    const payload = ts !== null ? `${nonce}:${ts}:${normalized}` : `${nonce}:${normalized}`;
+    const expected = Buffer.from(createHmac(algorithm, secret).update(payload).digest("hex"), "hex");
     const actual = Buffer.from(tag, "hex");
     if (expected.length !== actual.length)
         return false;
     return timingSafeEqual(expected, actual);
 }
 function createCanvas(width, height, theme) {
-    const pixels = new Uint8Array(width * height * 3);
+    const bytesPerPixel = 3;
+    const pixels = new Uint8Array(width * height * bytesPerPixel);
     if (!theme.gradient) {
         const bg = theme.backgroundColor;
-        for (let i = 0; i < pixels.length; i += 3) {
+        for (let i = 0; i < pixels.length; i += bytesPerPixel) {
             pixels[i] = bg[0];
             pixels[i + 1] = bg[1];
             pixels[i + 2] = bg[2];
         }
         return { width, height, pixels };
     }
-    // Linear gradient: project each pixel onto the angle vector and normalize
-    // over the canvas bounding range so both endpoints are reached.
     const { from, to, angle } = theme.gradient;
-    const rad = (angle * Math.PI) / 180;
+    const rad = angle * RENDERING_CONSTANTS.RADIAN_CONVERSION;
     const dx = Math.cos(rad);
     const dy = Math.sin(rad);
     const corners = [
@@ -207,21 +295,21 @@ function createCanvas(width, height, theme) {
     let minP = Infinity;
     let maxP = -Infinity;
     for (const [cx, cy] of corners) {
-        const proj = cx * dx + cy * dy;
-        if (proj < minP)
-            minP = proj;
-        if (proj > maxP)
-            maxP = proj;
+        const p = cx * dx + cy * dy;
+        if (p < minP)
+            minP = p;
+        if (p > maxP)
+            maxP = p;
     }
     const span = maxP - minP || 1;
     let p = 0;
+    const subpixelOffset = 0.5;
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
-            const t = ((x + 0.5) * dx + (y + 0.5) * dy - minP) / span;
-            pixels[p] = Math.round(from[0] + (to[0] - from[0]) * t);
-            pixels[p + 1] = Math.round(from[1] + (to[1] - from[1]) * t);
-            pixels[p + 2] = Math.round(from[2] + (to[2] - from[2]) * t);
-            p += 3;
+            const t = ((x + subpixelOffset) * dx + (y + subpixelOffset) * dy - minP) / span;
+            pixels[p++] = Math.round(from[0] + (to[0] - from[0]) * t);
+            pixels[p++] = Math.round(from[1] + (to[1] - from[1]) * t);
+            pixels[p++] = Math.round(from[2] + (to[2] - from[2]) * t);
         }
     }
     return { width, height, pixels };
@@ -233,6 +321,24 @@ function setPixel(c, x, y, color) {
     c.pixels[i] = color[0];
     c.pixels[i + 1] = color[1];
     c.pixels[i + 2] = color[2];
+}
+function blendPixel(c, x, y, color, alpha) {
+    if (x < 0 || y < 0 || x >= c.width || y >= c.height)
+        return;
+    if (alpha >= 1) {
+        const i = (y * c.width + x) * 3;
+        c.pixels[i] = color[0];
+        c.pixels[i + 1] = color[1];
+        c.pixels[i + 2] = color[2];
+        return;
+    }
+    if (alpha <= 0)
+        return;
+    const i = (y * c.width + x) * 3;
+    const inv = 1 - alpha;
+    c.pixels[i] = Math.round(color[0] * alpha + c.pixels[i] * inv);
+    c.pixels[i + 1] = Math.round(color[1] * alpha + c.pixels[i + 1] * inv);
+    c.pixels[i + 2] = Math.round(color[2] * alpha + c.pixels[i + 2] * inv);
 }
 function drawLine(c, x0, y0, x1, y1, color) {
     const dx = Math.abs(x1 - x0);
@@ -259,33 +365,49 @@ function drawWaves(c, count, color) {
     for (let w = 0; w < count; w++) {
         const amp = randomInt(3, 8);
         const period = randomInt(10, 30);
-        const phase = randomInt(0, 628) / 100;
+        const phase = randomInt(0, 628) / WAVE_CONSTANTS.PHASE_DIVISOR;
         const mid = randomInt(0, c.height);
         let prevY = Math.round(mid + amp * Math.sin(phase));
         for (let x = 1; x < c.width; x++) {
+            // Dynamic thickness variation to prevent clean mathematical wave frequency pattern detection
+            const thicknessJitter = randomInt(0, 2);
             const y = Math.round(mid + amp * Math.sin(phase + x / period));
             drawLine(c, x - 1, prevY, x, y, color);
+            if (thicknessJitter > 0) {
+                drawLine(c, x - 1, prevY + 1, x, y + 1, color);
+            }
             prevY = y;
         }
     }
 }
-function randRange(min, max) {
-    return min + Math.random() * (max - min);
+function pointInPolygon(x, y, polygon) {
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        const [xi, yi] = polygon[i];
+        const [xj, yj] = polygon[j];
+        const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+        if (intersect)
+            inside = !inside;
+    }
+    return inside;
 }
-/**
- * Renders a glyph with per-character geometric deformation: horizontal/vertical
- * scaling (randomizes width & height), rotation and shear. Rendering uses
- * inverse-transform sampling so rotated glyphs stay gapless.
- */
-function drawTransformedGlyph(c, char, cx, cy, scaleX, scaleY, angleDeg, shear, color, glyphs) {
-    const glyph = getGlyph(glyphs, char);
-    if (!glyph)
-        throw new Error(`unsupported character: "${char}"`);
-    const rad = (angleDeg * Math.PI) / 180;
+function isPointInVectorGlyph(gx, gy, glyph) {
+    let inside = false;
+    for (const poly of glyph) {
+        if (pointInPolygon(gx, gy, poly))
+            inside = !inside;
+    }
+    return inside;
+}
+function drawTransformedGlyph(c, char, cx, cy, scaleX, scaleY, angleDeg, shear, color, opts, opacity = RENDERING_CONSTANTS.DEFAULT_OPAQUE) {
+    const rad = angleDeg * RENDERING_CONSTANTS.RADIAN_CONVERSION;
     const cos = Math.cos(rad);
     const sin = Math.sin(rad);
-    const gw = GLYPH_WIDTH * scaleX;
-    const gh = GLYPH_HEIGHT * scaleY;
+    const useVector = opts.useVector;
+    const gw = (useVector ? VECTOR_GLYPH_WIDTH : GLYPH_WIDTH) * scaleX;
+    const gh = (useVector ? VECTOR_GLYPH_HEIGHT : GLYPH_HEIGHT) * scaleY;
+    const GW = useVector ? VECTOR_GLYPH_WIDTH : GLYPH_WIDTH;
+    const GH = useVector ? VECTOR_GLYPH_HEIGHT : GLYPH_HEIGHT;
     const halfW = (gw / 2) * Math.abs(cos) + (gh / 2) * Math.abs(sin) + 2;
     const halfH = (gw / 2) * Math.abs(sin) + (gh / 2) * Math.abs(cos) + 2;
     const top = cy - gh / 2;
@@ -293,38 +415,69 @@ function drawTransformedGlyph(c, char, cx, cy, scaleX, scaleY, angleDeg, shear, 
     const maxX = Math.round(cx + halfW);
     const minY = Math.round(top - halfH);
     const maxY = Math.round(top + gh + halfH);
+    let vectorGlyph;
+    let bitmapGlyph;
+    if (useVector) {
+        vectorGlyph = getVectorGlyph(opts.vectorGlyphs, char);
+        if (!vectorGlyph)
+            throw new Error(`unsupported character: "${char}"`);
+    }
+    else {
+        bitmapGlyph = getGlyph(opts.glyphs, char);
+        if (!bitmapGlyph)
+            throw new Error(`unsupported character: "${char}"`);
+    }
+    const offsets = RENDERING_CONSTANTS.SUBPIXEL_OFFSETS;
     for (let py = minY; py <= maxY; py++) {
         for (let px = minX; px <= maxX; px++) {
-            const dx = px - cx;
-            const dy = py - cy;
-            // reverse rotation
-            const rx = dx * cos + dy * sin;
-            const ry = -dx * sin + dy * cos;
-            // reverse shear
-            const sx = rx - shear * ry;
-            // reverse scale + center the glyph grid on (cx, cy)
-            const gx = sx / scaleX + GLYPH_WIDTH / 2;
-            const gy = ry / scaleY + GLYPH_HEIGHT / 2;
-            const col = Math.floor(gx);
-            const row = Math.floor(gy);
-            if (col >= 0 && col < GLYPH_WIDTH && row >= 0 && row < GLYPH_HEIGHT) {
-                const bits = glyph[row];
-                if (bits & (1 << (GLYPH_WIDTH - 1 - col))) {
-                    setPixel(c, px, py, color);
+            let hits = 0;
+            for (const oy of offsets) {
+                for (const ox of offsets) {
+                    const dx = px + ox - cx;
+                    const dy = py + oy - cy;
+                    const rx = dx * cos + dy * sin;
+                    const ry = -dx * sin + dy * cos;
+                    const sx = rx - shear * ry;
+                    const gx = sx / scaleX + GW / 2;
+                    const gy = ry / scaleY + GH / 2;
+                    if (useVector) {
+                        if (isPointInVectorGlyph(gx, gy, vectorGlyph))
+                            hits++;
+                    }
+                    else {
+                        const col = Math.floor(gx);
+                        const row = Math.floor(gy);
+                        if (col >= 0 && col < GW && row >= 0 && row < GH) {
+                            const bits = bitmapGlyph[row];
+                            if (bits & (1 << (GW - 1 - col)))
+                                hits++;
+                        }
+                    }
                 }
             }
+            if (hits === 0)
+                continue;
+            const coverage = hits / RENDERING_CONSTANTS.SUBPIXEL_DIVISOR;
+            const a = coverage * opacity;
+            if (a >= 1)
+                setPixel(c, px, py, color);
+            else if (a > 0)
+                blendPixel(c, px, py, color, a);
         }
     }
 }
 function addNoise(c, noise, theme) {
     const bg = theme.bgRef;
     const lineColor = theme.lineColor;
-    const lightLine = lineColor ?? (isLight(bg) ? [205, 205, 215] : mix(bg, [255, 255, 255], 0.6));
-    const darkLine = lineColor ?? (isLight(bg) ? [110, 110, 130] : mix([255, 255, 255], bg, 0.4));
-    const darkSpeck = mix(bg, [0, 0, 0], 0.85);
-    const lightSpeck = mix(bg, [255, 255, 255], 0.85);
+    const lightLineColorRef = [COLOR_REF_FACTORS.LIGHT_BG_LINE_LIGHTNESS, COLOR_REF_FACTORS.LIGHT_BG_LINE_LIGHTNESS, COLOR_REF_FACTORS.LIGHT_BG_LINE_CONTRAST];
+    const darkLineColorRef = [COLOR_REF_FACTORS.DARK_BG_LINE_LIGHTNESS, COLOR_REF_FACTORS.DARK_BG_LINE_LIGHTNESS, COLOR_REF_FACTORS.DARK_BG_LINE_CONTRAST];
+    const lightLine = lineColor ?? (isLight(bg) ? lightLineColorRef : mix(bg, [RENDERING_CONSTANTS.MAX_RGB_VALUE, RENDERING_CONSTANTS.MAX_RGB_VALUE, RENDERING_CONSTANTS.MAX_RGB_VALUE], COLOR_REF_FACTORS.LIGHT_BG_LINE_MIX));
+    const darkLine = lineColor ?? (isLight(bg) ? darkLineColorRef : mix([RENDERING_CONSTANTS.MAX_RGB_VALUE, RENDERING_CONSTANTS.MAX_RGB_VALUE, RENDERING_CONSTANTS.MAX_RGB_VALUE], bg, COLOR_REF_FACTORS.DARK_BG_LINE_MIX));
+    const darkSpeck = mix(bg, [0, 0, 0], COLOR_REF_FACTORS.DARK_SPECK_MIX);
+    const lightSpeck = mix(bg, [RENDERING_CONSTANTS.MAX_RGB_VALUE, RENDERING_CONSTANTS.MAX_RGB_VALUE, RENDERING_CONSTANTS.MAX_RGB_VALUE], COLOR_REF_FACTORS.LIGHT_SPECK_MIX);
     if (noise.backgroundPattern) {
-        drawWaves(c, randomInt(2, 5), lightLine);
+        const wavesCount = randomInt(WAVE_CONSTANTS.DEFAULT_WAVES_MIN, WAVE_CONSTANTS.DEFAULT_WAVES_MAX);
+        drawWaves(c, wavesCount, lightLine);
     }
     for (let i = 0; i < noise.backgroundLines; i++) {
         drawLine(c, randomInt(c.width), randomInt(c.height), randomInt(c.width), randomInt(c.height), lightLine);
@@ -339,25 +492,32 @@ function addNoise(c, noise, theme) {
 }
 function renderCaptchaImage(code, opts) {
     const n = opts.noise;
-    const baseGap = Math.max(1, Math.round(opts.scale * 1.5));
-    const rotRad = (n.rotation * Math.PI) / 180;
-    const rotAllow = Math.ceil((GLYPH_WIDTH * opts.scale * Math.sin(rotRad)) / 2) + 2;
-    const metrics = Array.from(code, () => ({
-        scaleX: opts.scale * randRange(n.widthScale[0], n.widthScale[1]),
-        scaleY: opts.scale * randRange(n.heightScale[0], n.heightScale[1]),
-        angle: randRange(-n.rotation, n.rotation),
-        shear: randRange(-n.shear, n.shear),
-        gap: Math.max(0, baseGap + randomInt(-2, 3) - n.charOverlap),
-        jitterY: n.jitter > 0 ? randomInt(-opts.scale * n.jitter, opts.scale * n.jitter + 1) : 0,
-    }));
-    const charW = metrics.map((m) => Math.ceil(GLYPH_WIDTH * m.scaleX));
-    const charH = metrics.map((m) => Math.ceil(GLYPH_HEIGHT * m.scaleY));
+    const GW = opts.useVector ? VECTOR_GLYPH_WIDTH : GLYPH_WIDTH;
+    const GH = opts.useVector ? VECTOR_GLYPH_HEIGHT : GLYPH_HEIGHT;
+    const scaleMultiplier = 1.5;
+    const baseGap = Math.max(1, Math.round(opts.scale * scaleMultiplier));
+    const rotRad = n.rotation * RENDERING_CONSTANTS.RADIAN_CONVERSION;
+    const rotAllow = Math.ceil((GW * opts.scale * Math.sin(rotRad)) / 2) + 2;
+    const metrics = Array.from(code, () => {
+        const minGapOffset = -2;
+        const maxGapOffset = 3;
+        const jitterOffset = 1;
+        return {
+            scaleX: opts.scale * randRange(n.widthScale[0], n.widthScale[1]),
+            scaleY: opts.scale * randRange(n.heightScale[0], n.heightScale[1]),
+            angle: randRange(-n.rotation, n.rotation),
+            shear: randRange(-n.shear, n.shear),
+            gap: Math.max(0, baseGap + randomInt(minGapOffset, maxGapOffset) - n.charOverlap),
+            jitterY: n.jitter > 0 ? randomInt(-opts.scale * n.jitter, opts.scale * n.jitter + jitterOffset) : 0,
+            opacity: randRange(n.opacity[0], n.opacity[1]),
+        };
+    });
+    const charW = metrics.map((m) => Math.ceil(GW * m.scaleX));
+    const charH = metrics.map((m) => Math.ceil(GH * m.scaleY));
     const maxCharH = Math.max(...charH);
-    const totalW = charW.reduce((a, b) => a + b, 0) +
-        metrics.reduce((a, m) => a + m.gap, 0) -
-        (metrics.at(-1)?.gap ?? 0);
-    const paddingX = opts.scale * 3;
-    const paddingY = opts.scale * 3 + rotAllow;
+    const totalW = charW.reduce((a, b) => a + b, 0) + metrics.reduce((a, m) => a + m.gap, 0) - (metrics.at(-1)?.gap ?? 0);
+    const paddingX = opts.scale * RENDERING_CONSTANTS.PADDING_SCALE_MULTIPLIER;
+    const paddingY = opts.scale * RENDERING_CONSTANTS.PADDING_SCALE_MULTIPLIER + rotAllow;
     const width = paddingX * 2 + totalW;
     const height = paddingY * 2 + maxCharH;
     const canvas = createCanvas(width, height, opts.theme);
@@ -367,11 +527,45 @@ function renderCaptchaImage(code, opts) {
         const m = metrics[i];
         const cx = x + charW[i] / 2;
         const cy = centerY + m.jitterY;
-        const color = opts.theme.textColor ?? [randomInt(20, 110), randomInt(20, 110), randomInt(20, 110)];
-        drawTransformedGlyph(canvas, code[i], cx, cy, m.scaleX, m.scaleY, m.angle, m.shear, color, opts.glyphs);
+        const minColorValue = 20;
+        const maxColorValue = 110;
+        const color = opts.theme.textColor ?? [
+            randomInt(minColorValue, maxColorValue),
+            randomInt(minColorValue, maxColorValue),
+            randomInt(minColorValue, maxColorValue)
+        ];
+        drawTransformedGlyph(canvas, code[i], cx, cy, m.scaleX, m.scaleY, m.angle, m.shear, color, opts, m.opacity);
         x += charW[i] + m.gap;
     }
     addNoise(canvas, opts.noise, opts.theme);
+    if (opts.format === "svg") {
+        const svgStr = encodeSvg(canvas);
+        const buffer = Buffer.from(svgStr, "utf-8");
+        const base64 = buffer.toString("base64");
+        return {
+            buffer,
+            base64,
+            dataUrl: `data:image/svg+xml;base64,${base64}`,
+            blob: new Blob([new Uint8Array(buffer)], { type: "image/svg+xml" }),
+            width,
+            height,
+            mimeType: "image/svg+xml",
+        };
+    }
+    if (opts.format === "jpeg") {
+        const buffer = encodeJpeg(width, height, canvas.pixels);
+        const base64 = buffer.toString("base64");
+        return {
+            buffer,
+            base64,
+            dataUrl: `data:image/jpeg;base64,${base64}`,
+            blob: new Blob([new Uint8Array(buffer)], { type: "image/jpeg" }),
+            width,
+            height,
+            mimeType: "image/jpeg",
+        };
+    }
+    // Fallback to PNG
     const buffer = encodePng(width, height, canvas.pixels);
     const base64 = buffer.toString("base64");
     return {
@@ -381,49 +575,19 @@ function renderCaptchaImage(code, opts) {
         blob: new Blob([new Uint8Array(buffer)], { type: "image/png" }),
         width,
         height,
+        mimeType: "image/png",
     };
 }
-/**
- * Generates a random code, optionally renders it to a PNG and returns its irreversible hash.
- *
- * Every rendering metric (character spacing, per-character width/height, rotation,
- * shear and jitter) is randomized per image to defeat OCR/segmentation.
- *
- * ```ts
- * const captcha = createCaptcha({ secret: process.env.CAPTCHA_SECRET });
- * // send captcha.image.dataUrl + captcha.id to client, store nothing else
- * // later:
- * verifyCode(storedId, userInput, { secret: process.env.CAPTCHA_SECRET });
- * ```
- */
 export function createCaptcha(options = {}) {
     const opts = resolve(options);
-    const code = generateCode(opts);
-    const result = {
-        id: hashCode(code, opts),
-        code,
-    };
+    const code = generateCode({ length: opts.length, charset: opts.charset });
+    const result = { id: hashCode(code, { secret: opts.secret, algorithm: opts.algorithm }), code };
     if (opts.renderImage) {
         result.image = renderCaptchaImage(code, opts);
     }
     return result;
 }
-/**
- * Renders a specific code to a PNG image.
- * Use this when you already have a code (e.g., from generateCode) and want to render it.
- *
- * ```ts
- * const code = generateCode({ length: 6, secret: "my-secret" });
- * const image = renderCaptcha(code, { scale: 8, difficulty: "hard" });
- * // image.buffer, image.base64, image.dataUrl, image.blob
- * ```
- */
 export function renderCaptcha(code, options = {}) {
-    const captchaOptions = {
-        ...options,
-        length: code.length,
-        renderImage: true,
-    };
-    const opts = resolve(captchaOptions);
+    const opts = resolve({ ...options, length: code.length });
     return renderCaptchaImage(code, opts);
 }

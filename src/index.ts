@@ -19,5 +19,5 @@ export type {
   RGB,
 } from "./captcha.js";
 
-export { DEFAULT_GLYPHS } from "./font.js";
-export type { GlyphMap } from "./font.js";
+export { DEFAULT_GLYPHS, DEFAULT_VECTOR_GLYPHS } from "./font.js";
+export type { GlyphMap, VectorGlyphMap, VectorGlyph, Point, Polygon } from "./font.js";

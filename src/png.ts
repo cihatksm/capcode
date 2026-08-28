@@ -1,7 +1,7 @@
 import { deflateSync } from "node:zlib";
 
 const CRC_TABLE = (() => {
-  const table = new Int32Array(256);
+  const table = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
     let c = n;
     for (let k = 0; k < 8; k++) {

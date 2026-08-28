@@ -1,5 +1,5 @@
 import { writeFileSync } from "node:fs";
-import { createCaptcha, renderCaptcha, generateCode } from "../dist/index.js";
+import { createCaptcha } from "./dist/index.js";
 
 const examples = [
   { name: "easy", opts: { difficulty: "easy", secret: "demo", length: 6 } },
@@ -16,18 +16,28 @@ const examples = [
 for (const { name, opts } of examples) {
   const { code, image } = createCaptcha(opts);
   if (image) {
-    writeFileSync(new URL(`../examples/${name}.png`, import.meta.url), image.buffer);
-    if (name == 'easy') writeFileSync(new URL(`../${name}.png`, import.meta.url), image.buffer);
+    writeFileSync(new URL(`./examples/${name}.png`, import.meta.url), image.buffer);
+    if (['easy'].includes(name)) {
+      writeFileSync(new URL(`./${name}.png`, import.meta.url), image.buffer);
+    }
     console.log(`examples/${name}.png  (code=${code}, ${image.width}x${image.height})`);
   } else {
     console.log(`examples/${name}: image NOT rendered (renderImage=false) — code=${code}`);
   }
 }
 
-// renderCaptcha ile harici kod render örneği
-const code = generateCode({ length: 5, secret: "demo" });
-const img = renderCaptcha(code, { difficulty: "hard", scale: 10 });
-writeFileSync(new URL("../examples/render-captcha.png", import.meta.url), img.buffer);
-console.log(`examples/render-captcha.png  (rendered code=${code}, ${img.width}x${img.height})`);
+// Test SVG format captcha creation (synchronous)
+const svgCaptcha = createCaptcha({ difficulty: "medium", secret: "demo", length: 6, format: "svg" });
+if (svgCaptcha.image) {
+  writeFileSync(new URL("./examples/easy-svg.svg", import.meta.url), svgCaptcha.image.buffer);
+  console.log(`examples/easy-svg.svg rendered (code=${svgCaptcha.code}, format=svg)`);
+}
 
-console.log("\nDone. Open the .png files in examples/ to inspect visually.");
+// Test JPEG format captcha creation (sync, pure TypeScript — no sharp)
+const jpegCaptcha = createCaptcha({ difficulty: "medium", secret: "demo", length: 6, format: "jpeg" });
+if (jpegCaptcha.image) {
+  writeFileSync(new URL("./examples/easy-jpeg.jpg", import.meta.url), jpegCaptcha.image.buffer);
+  console.log(`examples/easy-jpeg.jpg  (code=${jpegCaptcha.code}, format=jpeg)`);
+}
+
+console.log("\nDone. Open the files in examples/ to inspect visually.");

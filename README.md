@@ -1,8 +1,8 @@
 # capcode
 
-Generates a random code → renders it to a PNG image → produces a **signed, opaque token** of the code (image id) → verifies user input by checking the token against the supplied code. The token cannot be reversed to the code without the `secret`.
+Generates a random code → renders it as a PNG / SVG / JPEG image → produces a **signed, opaque token** of the code → verifies user input against the token. The token cannot be reversed to the code without the `secret`. Tokens carry a timestamp and can be given an expiry (`maxAge`).
 
-**Zero dependencies.** Uses only Node.js built-ins (`crypto`, `zlib`).
+**Zero dependencies.** Uses only Node.js built-ins (`crypto`, `zlib`). All formats (PNG, SVG, JPEG) are generated in pure TypeScript.
 
 ![example](easy.png)
 
@@ -20,37 +20,71 @@ import { createCaptcha, verifyCode } from "capcode";
 // 1) Create a captcha
 const captcha = createCaptcha({ secret: process.env.CAPTCHA_SECRET });
 
-captcha.id;                  // signed opaque token `nonce.tag` (code cannot be recovered without the secret)
+captcha.id;                  // signed opaque token `nonce.ts.tag` (code cannot be recovered without the secret)
 captcha.code;                // plaintext code (KEEP SERVER-SIDE ONLY)
-captcha.image.buffer;        // PNG Buffer
-captcha.image.base64;        // PNG base64 string
+captcha.image.buffer;        // image Buffer (PNG by default)
+captcha.image.base64;        // base64 string
 captcha.image.dataUrl;       // data URL for <img src="...">
-captcha.image.blob;          // Web Blob (image/png)
-captcha.image.width/height;  // rendered dimensions
+captcha.image.blob;          // Web Blob
+captcha.image.mimeType;      // "image/png" | "image/svg+xml" | "image/jpeg"
+captcha.image.width;         // rendered width (px)
+captcha.image.height;        // rendered height (px)
 
 // 2) Send id + image to the client, NEVER the code
 //    (e.g. Express: res.json({ id: captcha.id, image: captcha.image.dataUrl }))
 
 // 3) When the user submits, verify
 const ok = verifyCode(captcha.id, userInput, { secret: process.env.CAPTCHA_SECRET });
-// ok === true -> correct code
+// ok === true → correct code
 ```
+
+### Token expiry (maxAge)
+
+```js
+// Produce a token that carries a timestamp (always embedded in v2 format)
+const captcha = createCaptcha({ secret: process.env.CAPTCHA_SECRET });
+
+// Verify and reject if more than 5 minutes (300 s) have passed
+const ok = verifyCode(captcha.id, userInput, {
+  secret: process.env.CAPTCHA_SECRET,
+  maxAge: 300,
+});
+```
+
+Tokens issued without `maxAge` **never expire automatically** — you control the policy at verify time.
 
 ### Important
 
-- A `secret` is **required**. The id is a signed token (`nonce.tag`) produced with **HMAC-SHA256**; `createCaptcha` / `hashCode` / `verifyCode` refuse to run without it. Without the secret the code space is tiny (≈32^length) and could be brute-forced, so a secret is mandatory.
-- The token is **opaque**: it leaks neither the code nor its length, and a random `nonce` makes every token unique even for identical codes (no correlation / precomputation).
+- A `secret` is **required**. The id is a signed token produced with **HMAC-SHA256**; all three functions (`createCaptcha`, `hashCode`, `verifyCode`) throw without it.
+- The token is **opaque**: it leaks neither the code nor its length, and a random `nonce` makes every token unique even for identical codes.
 - `verifyCode` uses a **timing-safe** comparison.
-- Input is normalized: `" a b 3x "` == `"AB3X"` (whitespace removed, upper-cased).
+- Input is normalized: `" a b 3x "` → `"AB3X"` (whitespace stripped, upper-cased).
 - **Keep the `secret` server-side only.** Never ship it to the client.
 
-## Anti-OCR hardening (per AI recommendations)
+## Why capcode? (Comparison with Alternatives)
+
+Unlike most CAPTCHA libraries that only render graphics and force you to manage session state or Redis stores, `capcode` handles the entire authentication lifecycle statelessly while maintaining zero external dependencies.
+
+| Feature / Capability | `capcode` | `svg-captcha` | `captcha-canvas` | `trek-captcha` |
+|:---|:---:|:---:|:---:|:---:|
+| **Zero Dependencies** | ✅ **Yes** (0 deps) | ✅ **Yes** (0 deps) | ❌ No (requires `node-canvas`) | ❌ No (native binary) |
+| **No Native / C++ Builds** | ✅ **Pure JS/TS** | ✅ Pure JS | ❌ Needs Cairo/Pango/Python | ❌ Native Rust binary |
+| **Output Formats** | **PNG, SVG, JPEG** | SVG only | PNG, JPEG, SVG | PNG only |
+| **Built-in Stateless Verification** | ✅ **HMAC-SHA256/512** | ❌ (returns plain text) | ❌ (returns plain text) | ❌ (returns plain text) |
+| **Token Expiry (TTL / `maxAge`)** | ✅ **Built-in** | ❌ (manual session/DB) | ❌ (manual session/DB) | ❌ (manual session/DB) |
+| **Timing-Safe Comparison** | ✅ **Built-in** | ❌ None | ❌ None | ❌ None |
+| **Anti-OCR Geometric Distortion** | ✅ Rotation, shear, scale jitter, overlap, chaotic waves | ⚠️ Basic curve & points | ⚠️ Basic distortion | ⚠️ Basic wave lines |
+| **Ready-to-use Output Helpers** | ✅ `buffer`, `base64`, `dataUrl`, `blob`, `mimeType` | ❌ SVG text only | ⚠️ Buffer / stream | ⚠️ Buffer only |
+| **TypeScript Support** | ✅ **Native** (included) | ⚠️ `@types/svg-captcha` | ✅ Native | ⚠️ `@types/trek-captcha` |
+
+## Anti-OCR hardening
 
 Every image randomizes its geometry to defeat OCR/segmentation:
 
-- **Geometric deformation**: per-character rotation, horizontal shear, and independent horizontal/vertical scaling (randomized width & height per character).
+- **Geometric deformation**: per-character rotation, horizontal shear, and randomized width / height scaling.
 - **Overlapping characters**: adjacent letters overlap, breaking segmentation.
 - **Noise layers**: wavy background pattern, light lines behind text, darker lines over text, and salt-and-pepper dots.
+- **Dynamic jitter**: wave line thickness varies per segment to prevent frequency analysis.
 - **Random letter spacing**: gap between characters is randomized per image.
 - **Font variety**: supply your own bitmap `glyphs` to vary the typeface between deployments. Default charset excludes easily-confused characters (`I`, `O`, `0`, `1`).
 
@@ -58,28 +92,55 @@ Every image randomizes its geometry to defeat OCR/segmentation:
 
 ### `createCaptcha(options?)` → `CaptchaResult`
 
-| Option      | Type              | Default                              | Description |
-|-------------|-------------------|--------------------------------------|-------------|
-| `length`    | number            | `6`                                  | Code length (1–64) |
-| `charset`   | string            | `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`   | Allowed characters (must exist in `glyphs`) |
-| `secret`    | string            | **required**                          | HMAC key. `createCaptcha`/`hashCode`/`verifyCode` throw if omitted |
-| `scale`     | number            | `8`                                  | Base pixel scale (1–16) |
-| `algorithm` | string            | `sha256`                             | Hash algorithm (`sha512`, ...) |
-| `difficulty`| `Difficulty`      | `"medium"`                           | `easy` / `medium` / `hard` |
-| `noise`     | `NoiseOptions`    | —                                    | Fine-grained overrides on top of the difficulty preset |
-| `glyphs`    | `GlyphMap`        | built-in 5×7 font                    | Custom bitmap font |
-| `theme`     | `ThemeOptions`    | —                                    | `textColor` / `backgroundColor` / `lineColor` as `[r,g,b]` |
+| Option         | Type              | Default                              | Description |
+|----------------|-------------------|--------------------------------------|-------------|
+| `length`       | number            | `6`                                  | Code length (1–64) |
+| `charset`      | string            | `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`   | Allowed characters (must exist in `glyphs`) |
+| `secret`       | string            | **required**                          | HMAC key — all three functions throw if omitted |
+| `scale`        | number            | `8`                                  | Base pixel scale (1–16) |
+| `algorithm`    | string            | `sha256`                             | Hash algorithm (`sha512`, ...) |
+| `difficulty`   | `Difficulty`      | `"medium"`                           | `easy` / `medium` / `hard` |
+| `noise`        | `NoiseOptions`    | —                                    | Fine-grained overrides on top of the difficulty preset |
+| `glyphs`       | `GlyphMap`        | built-in 5×7 bitmap font             | Custom bitmap font |
+| `theme`        | `ThemeOptions`    | —                                    | `textColor` / `backgroundColor` / `lineColor` as `[r,g,b]` |
+| `format`       | `"png"` \| `"svg"` \| `"jpeg"` | `"png"` | Output image format |
+| `maxAge`       | number            | —                                    | Max token age in seconds — **set at verify time**, not here |
+| `renderImage`  | boolean           | `true`                               | Set `false` to skip rendering (returns no `image`) |
 
-Returned object: `{ id, code, image: { buffer, base64, dataUrl, blob, width, height } }`
+Returned object: `{ id, code, image?: { buffer, base64, dataUrl, blob, mimeType, width, height } }`
 
 ### `generateCode(options?)` → `string`
 Generates only a cryptographically random code.
 
 ### `hashCode(code, options?)` → `string`
-Normalizes a code and returns a **signed opaque token** `nonce.tag` (requires `secret`).
+Normalizes a code and returns a **signed opaque token** `nonce.ts.tag` (requires `secret`). The `ts` field is a compact base-36 Unix timestamp enabling TTL verification.
 
 ### `verifyCode(id, code, options?)` → `boolean`
-Recomputes the token for the given code and the `secret`, then compares it to `id` in constant time. Returns `false` for malformed tokens; throws if no `secret` is supplied.
+Recomputes the token for the given code and the `secret`, then compares it to `id` in constant time. Optionally enforces `maxAge` (seconds). Returns `false` for malformed or expired tokens; throws if no `secret` is supplied.
+
+## Token format
+
+```
+v2 (current):  nonce.ts.tag
+v1 (legacy):   nonce.tag          ← still verified; rejected when maxAge is set
+```
+
+- `nonce` — 32 hex chars (16 random bytes), prevents precomputation
+- `ts` — Unix timestamp in base-36, compact and URL-safe  
+- `tag` — HMAC(secret, `nonce:ts:normalizedCode`)
+
+## Output formats
+
+| Format | `mimeType`       | Notes |
+|--------|------------------|-------|
+| `png`  | `image/png`      | Default, lossless |
+| `svg`  | `image/svg+xml`  | Scalable, smallest file size |
+| `jpeg` | `image/jpeg`     | Lossy, pure TypeScript — no extra deps |
+
+```js
+createCaptcha({ secret, format: "svg" });
+createCaptcha({ secret, format: "jpeg" }); // pure TS, no sharp needed
+```
 
 ## Visual difficulty
 
@@ -126,7 +187,7 @@ createCaptcha({
 });
 ```
 
-- `textColor` — the given color is used for the text glyphs (when omitted, each character is drawn in a random dark shade to resist OCR).
+- `textColor` — when omitted, each character is drawn in a random dark shade to resist OCR.
 - `backgroundColor` — canvas background (default white).
 - `lineColor` — if set, both background and foreground noise lines use this color; otherwise lines are auto-picked to contrast with the background.
 
@@ -137,6 +198,14 @@ Colors outside the 0–255 range throw a `RangeError`.
 ```bash
 npm test
 ```
+
+## Benchmark
+
+```bash
+npm run benchmark
+```
+
+Measures captcha rendering (easy / medium / hard, PNG and SVG) and token operations (hashCode / verifyCode).
 
 ## License
 
