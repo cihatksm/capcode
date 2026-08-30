@@ -1,8 +1,10 @@
-# capcode
+# capcode - Node.js CAPTCHA Generator (PNG / SVG / JPEG)
 
-Generates a random code → renders it as a PNG / SVG / JPEG image → produces a **signed, opaque token** of the code → verifies user input against the token. The token cannot be reversed to the code without the `secret`. Tokens carry a timestamp and can be given an expiry (`maxAge`).
+> Zero-dependency Node.js CAPTCHA library with HMAC-SHA256 signed tokens & TTL. Stateless, pure TypeScript alternative to `svg-captcha` and `captcha-canvas` — no native dependencies, no Redis/session required.
 
-**Zero dependencies.** Uses only Node.js built-ins (`crypto`, `zlib`). All formats (PNG, SVG, JPEG) are generated in pure TypeScript.
+Generates a random code → renders it as a **PNG / SVG / JPEG** image → produces a **signed, opaque token** (`HMAC-SHA256`) → verifies user input against the token. The token cannot be reversed without the `secret`. Tokens carry a timestamp and support expiry (`maxAge`). Perfect for **Express.js, Fastify, Next.js** and any Node.js framework.
+
+**Zero dependencies.** Uses only Node.js built-ins (`crypto`, `zlib`). All formats (PNG, SVG, JPEG) are generated in pure TypeScript. By [Cihat Kösem](https://cihatksm.com).
 
 ![example](easy.png)
 
@@ -221,6 +223,20 @@ verifyCode(id, userInput, { secret: SECRET, maxAge: 300, algorithm: "sha256" });
 One low-severity note: future timestamps (`ts > now + 60s`) should be rejected — see `SECURITY.md#3.2` for wrapper fix until upstream patch. No backdoor, `npm audit` 0 vulns.
 
 Report issues at `https://github.com/cihatksm/capcode/issues`.
+
+## FAQ
+
+### How to add CAPTCHA to Express.js / Node.js?
+Use `createCaptcha({ secret })` to generate `id` + `image.dataUrl`, send both to the client, then verify with `verifyCode(id, userInput, { secret, maxAge: 300 })`. No session or Redis needed — see [Usage](#usage).
+
+### capcode vs svg-captcha vs captcha-canvas?
+Unlike `svg-captcha` (SVG only, plain text) and `captcha-canvas` (requires `node-canvas` native build), `capcode` supports **PNG, SVG and JPEG** in pure TypeScript, with built-in **HMAC-SHA256 stateless verification, TTL and timing-safe comparison**. See [Why capcode?](#why-capcode-comparison-with-alternatives).
+
+### Does capcode support JPEG and SVG?
+Yes. `createCaptcha({ secret, format: "svg" })` or `format: "jpeg"` — both generated without extra dependencies. See [Output formats](#output-formats).
+
+### Is capcode secure for production?
+Yes. Audited `0.0.2` (2026-08-29), zero dependencies, `timingSafeEqual`, opaque `nonce.ts.tag` tokens. See [SECURITY.md](./SECURITY.md).
 
 ## License
 
