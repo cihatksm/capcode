@@ -1,6 +1,6 @@
 {
   "name": "capcode",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Zero-dependency Node.js CAPTCHA generator - PNG/SVG/JPEG image with HMAC-SHA256 signed token & TTL. Stateless pure TypeScript alternative to svg-captcha and captcha-canvas.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
