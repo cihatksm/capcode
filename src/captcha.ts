@@ -71,6 +71,7 @@ export interface NoiseOptions {
   dots?: number;
   backgroundLines?: number;
   foregroundLines?: number;
+  /** Fraction of character width that overlaps the next character (0–1). 0.35 ≈ 35% overlap. */
   charOverlap?: number;
   backgroundPattern?: boolean;
   jitter?: number;
@@ -84,14 +85,14 @@ export interface NoiseOptions {
 
 const DIFFICULTY_PRESETS: Record<Difficulty, Required<NoiseOptions>> = {
   easy: {
-    dots: 0.5,
-    backgroundLines: 1,
+    dots: 1.5,
+    backgroundLines: 2,
     foregroundLines: 0,
-    charOverlap: 0,
+    charOverlap: 0.1,
     backgroundPattern: false,
     jitter: 1,
-    rotation: 0,
-    shear: 0,
+    rotation: 5,
+    shear: 0.05,
     widthScale: [1, 1],
     heightScale: [1, 1],
     opacity: [0.85, 1],
@@ -113,7 +114,7 @@ const DIFFICULTY_PRESETS: Record<Difficulty, Required<NoiseOptions>> = {
     dots: 6,
     backgroundLines: 4,
     foregroundLines: 3,
-    charOverlap: 1,
+    charOverlap: 0.35,
     backgroundPattern: true,
     jitter: 2,
     rotation: 20,
@@ -210,10 +211,11 @@ function resolveNoise(difficulty: Difficulty, overrides?: NoiseOptions): Require
     noise.backgroundLines < 0 ||
     noise.foregroundLines < 0 ||
     noise.charOverlap < 0 ||
+    noise.charOverlap > 1 ||
     noise.rotation < 0 ||
     noise.shear < 0
   ) {
-    throw new RangeError("noise values must not be negative");
+    throw new RangeError("noise values must not be negative and charOverlap must be between 0 and 1");
   }
   if (noise.jitter < 0 || noise.jitter > 3) {
     throw new RangeError("noise.jitter must be between 0 and 3");
@@ -506,12 +508,13 @@ function drawLine(c: Canvas, x0: number, y0: number, x1: number, y1: number, col
   }
 }
 
-function drawWaves(c: Canvas, count: number, color: RGB): void {
+function drawWaves(c: Canvas, count: number, getColor: () => RGB): void {
   for (let w = 0; w < count; w++) {
     const amp = randomInt(3, 8);
     const period = randomInt(10, 30);
     const phase = randomInt(0, 628) / WAVE_CONSTANTS.PHASE_DIVISOR;
     const mid = randomInt(0, c.height);
+    const color = getColor();
     let prevY = Math.round(mid + amp * Math.sin(phase));
     for (let x = 1; x < c.width; x++) {
       // Dynamic thickness variation to prevent clean mathematical wave frequency pattern detection
@@ -587,6 +590,12 @@ function drawTransformedGlyph(
     if (!bitmapGlyph) throw new Error(`unsupported character: "${char}"`);
   }
 
+  // Local/elastic distortion: per-glyph sinusoidal horizontal shift varying along glyph height.
+  // This deforms the glyph contour itself, not just the global affine transform.
+  const elasticAmp = randRange(0.35, 0.75);
+  const elasticFreq = randRange(1.1, 1.9);
+  const elasticPhase = randRange(0, Math.PI * 2);
+
   const offsets = RENDERING_CONSTANTS.SUBPIXEL_OFFSETS;
   for (let py = minY; py <= maxY; py++) {
     for (let px = minX; px <= maxX; px++) {
@@ -598,8 +607,9 @@ function drawTransformedGlyph(
           const rx = dx * cos + dy * sin;
           const ry = -dx * sin + dy * cos;
           const sx = rx - shear * ry;
-          const gx = sx / scaleX + GW / 2;
           const gy = ry / scaleY + GH / 2;
+          const warp = elasticAmp * Math.sin(elasticFreq * gy + elasticPhase);
+          const gx = sx / scaleX + GW / 2 + warp;
           if (useVector) {
             if (isPointInVectorGlyph(gx, gy, vectorGlyph!)) hits++;
           } else {
@@ -622,30 +632,34 @@ function drawTransformedGlyph(
 }
 
 function addNoise(c: Canvas, noise: Required<NoiseOptions>, theme: ResolvedTheme): void {
-  const bg = theme.bgRef;
-  const lineColor = theme.lineColor;
-  const lightLineColorRef: RGB = [COLOR_REF_FACTORS.LIGHT_BG_LINE_LIGHTNESS, COLOR_REF_FACTORS.LIGHT_BG_LINE_LIGHTNESS, COLOR_REF_FACTORS.LIGHT_BG_LINE_CONTRAST];
-  const darkLineColorRef: RGB = [COLOR_REF_FACTORS.DARK_BG_LINE_LIGHTNESS, COLOR_REF_FACTORS.DARK_BG_LINE_LIGHTNESS, COLOR_REF_FACTORS.DARK_BG_LINE_CONTRAST];
-  
-  const lightLine: RGB = lineColor ?? (isLight(bg) ? lightLineColorRef : mix(bg, [RENDERING_CONSTANTS.MAX_RGB_VALUE, RENDERING_CONSTANTS.MAX_RGB_VALUE, RENDERING_CONSTANTS.MAX_RGB_VALUE], COLOR_REF_FACTORS.LIGHT_BG_LINE_MIX));
-  const darkLine: RGB = lineColor ?? (isLight(bg) ? darkLineColorRef : mix([RENDERING_CONSTANTS.MAX_RGB_VALUE, RENDERING_CONSTANTS.MAX_RGB_VALUE, RENDERING_CONSTANTS.MAX_RGB_VALUE], bg, COLOR_REF_FACTORS.DARK_BG_LINE_MIX));
-  
-  const darkSpeck: RGB = mix(bg, [0, 0, 0], COLOR_REF_FACTORS.DARK_SPECK_MIX);
-  const lightSpeck: RGB = mix(bg, [RENDERING_CONSTANTS.MAX_RGB_VALUE, RENDERING_CONSTANTS.MAX_RGB_VALUE, RENDERING_CONSTANTS.MAX_RGB_VALUE], COLOR_REF_FACTORS.LIGHT_SPECK_MIX);
+  // Per-element random color sampled from the same distribution as glyph text (20-110 per channel).
+  // If a fixed textColor/lineColor is provided we jitter around it so noise still shares the same brightness band.
+  const randomTextLikeColor = (): RGB => {
+    const base: RGB | undefined = theme.textColor ?? theme.lineColor ?? undefined;
+    if (base) {
+      const jitter = 22;
+      return [
+        Math.max(0, Math.min(RENDERING_CONSTANTS.MAX_RGB_VALUE, base[0] + randomInt(-jitter, jitter + 1))),
+        Math.max(0, Math.min(RENDERING_CONSTANTS.MAX_RGB_VALUE, base[1] + randomInt(-jitter, jitter + 1))),
+        Math.max(0, Math.min(RENDERING_CONSTANTS.MAX_RGB_VALUE, base[2] + randomInt(-jitter, jitter + 1))),
+      ];
+    }
+    return [randomInt(20, 110), randomInt(20, 110), randomInt(20, 110)];
+  };
 
   if (noise.backgroundPattern) {
     const wavesCount = randomInt(WAVE_CONSTANTS.DEFAULT_WAVES_MIN, WAVE_CONSTANTS.DEFAULT_WAVES_MAX);
-    drawWaves(c, wavesCount, lightLine);
+    drawWaves(c, wavesCount, randomTextLikeColor);
   }
   for (let i = 0; i < noise.backgroundLines; i++) {
-    drawLine(c, randomInt(c.width), randomInt(c.height), randomInt(c.width), randomInt(c.height), lightLine);
+    drawLine(c, randomInt(c.width), randomInt(c.height), randomInt(c.width), randomInt(c.height), randomTextLikeColor());
   }
   const dotCount = Math.floor((c.width * c.height * noise.dots) / 1000);
   for (let i = 0; i < dotCount; i++) {
-    setPixel(c, randomInt(c.width), randomInt(c.height), Math.random() < 0.5 ? darkSpeck : lightSpeck);
+    setPixel(c, randomInt(c.width), randomInt(c.height), randomTextLikeColor());
   }
   for (let i = 0; i < noise.foregroundLines; i++) {
-    drawLine(c, randomInt(c.width), randomInt(c.height), randomInt(c.width), randomInt(c.height), darkLine);
+    drawLine(c, randomInt(c.width), randomInt(c.height), randomInt(c.width), randomInt(c.height), randomTextLikeColor());
   }
 }
 
@@ -659,23 +673,30 @@ function renderCaptchaImage(code: string, opts: ResolvedOptions): CaptchaImage {
   const rotRad = n.rotation * RENDERING_CONSTANTS.RADIAN_CONVERSION;
   const rotAllow = Math.ceil((GW * opts.scale * Math.sin(rotRad)) / 2) + 2;
 
-  const metrics = Array.from(code, () => {
-    const minGapOffset = -2;
-    const maxGapOffset = 3;
+  // Per-character metrics: scale/angle/shear first, then gap based on charOverlap as % of char width
+  const rawMetrics = Array.from(code, () => {
     const jitterOffset = 1;
     return {
       scaleX: opts.scale * randRange(n.widthScale[0], n.widthScale[1]),
       scaleY: opts.scale * randRange(n.heightScale[0], n.heightScale[1]),
       angle: randRange(-n.rotation, n.rotation),
       shear: randRange(-n.shear, n.shear),
-      gap: Math.max(0, baseGap + randomInt(minGapOffset, maxGapOffset) - n.charOverlap),
       jitterY: n.jitter > 0 ? randomInt(-opts.scale * n.jitter, opts.scale * n.jitter + jitterOffset) : 0,
       opacity: randRange(n.opacity[0], n.opacity[1]),
     };
   });
 
-  const charW = metrics.map((m) => Math.ceil(GW * m.scaleX));
-  const charH = metrics.map((m) => Math.ceil(GH * m.scaleY));
+  const charW = rawMetrics.map((m) => Math.ceil(GW * m.scaleX));
+  const charH = rawMetrics.map((m) => Math.ceil(GH * m.scaleY));
+
+  // gap = baseGap + jitter - overlapAmount where overlapAmount = charOverlap * charWidth
+  // This allows negative gaps (true glyph-stroke overlap) when charOverlap > 0.
+  const metrics = rawMetrics.map((m, i) => {
+    const overlap = Math.round(n.charOverlap * charW[i]);
+    const gapJitter = randomInt(-2, 3);
+    const gap = baseGap + gapJitter - overlap;
+    return { ...m, gap };
+  });
   const maxCharH = Math.max(...charH);
   const totalW =
     charW.reduce((a, b) => a + b, 0) + metrics.reduce((a, m) => a + m.gap, 0) - (metrics.at(-1)?.gap ?? 0);

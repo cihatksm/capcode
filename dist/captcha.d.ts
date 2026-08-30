@@ -17,6 +17,7 @@ export interface NoiseOptions {
     dots?: number;
     backgroundLines?: number;
     foregroundLines?: number;
+    /** Fraction of character width that overlaps the next character (0–1). 0.35 ≈ 35% overlap. */
     charOverlap?: number;
     backgroundPattern?: boolean;
     jitter?: number;
